@@ -10,6 +10,7 @@ import com.example.data.AppDatabase
 import com.example.data.UploadItem
 import com.example.data.UploadRepository
 import com.example.network.DriveService
+import android.content.Intent
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -25,6 +26,7 @@ import kotlinx.coroutines.withContext
 sealed interface AuthState {
     object LoggedOut : AuthState
     object Loading : AuthState
+    data class ResolvingAuth(val intent: Intent) : AuthState
     data class LoggedIn(
         val displayName: String?,
         val email: String?,
@@ -100,9 +102,13 @@ class CloudXViewModel(application: Application) : AndroidViewModel(application) 
                             "https://www.googleapis.com/auth/userinfo.profile " +
                             "https://www.googleapis.com/auth/userinfo.email " +
                             "openid"
+                    val resolvedAccount = account.account ?: run {
+                        val email = account.email ?: throw Exception("Account email is null")
+                        android.accounts.Account(email, "com.google")
+                    }
                     GoogleAuthUtil.getToken(
                         getApplication(),
-                        account.account ?: throw Exception("Account is null"),
+                        resolvedAccount,
                         scopes
                     )
                 }
@@ -117,10 +123,13 @@ class CloudXViewModel(application: Application) : AndroidViewModel(application) 
                 // Fetch existing files from Google Drive
                 fetchDriveFiles()
             } catch (e: UserRecoverableAuthException) {
-                // In a production app, the user might need to resolve a consent screen.
-                // Since AI Studio OAuth has authorized, it should be clean.
-                Log.e(tag, "Recoverable auth exception", e)
-                _authState.value = AuthState.Error("Auth action required: ${e.message}")
+                Log.w(tag, "Recoverable auth exception, directing UI to resolve", e)
+                val intent = e.intent
+                if (intent != null) {
+                    _authState.value = AuthState.ResolvingAuth(intent)
+                } else {
+                    _authState.value = AuthState.Error("Auth action required, but no resolution dialog intent was provided.")
+                }
             } catch (e: Exception) {
                 Log.e(tag, "Failed to get access token", e)
                 _authState.value = AuthState.Error(e.message ?: "Authentication failed")
@@ -153,6 +162,62 @@ class CloudXViewModel(application: Application) : AndroidViewModel(application) 
                 _authState.value = AuthState.Error("Sign out error: ${e.localizedMessage}")
             }
         }
+    }
+
+    /**
+     * Sets a custom error message for authentication.
+     */
+    fun setAuthError(message: String) {
+        _authState.value = AuthState.Error(message)
+    }
+
+    /**
+     * Returns the SHA-1 fingerprint and the package name of the app for diagnostics.
+     */
+    fun getAppSha1AndPackageName(): Pair<String, String> {
+        val context = getApplication<Application>()
+        val packageName = context.packageName
+        var sha1 = "Unknown SHA-1"
+        try {
+            val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                context.packageManager.getPackageInfo(
+                    packageName,
+                    android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(
+                    packageName,
+                    android.content.pm.PackageManager.GET_SIGNATURES
+                )
+            }
+            
+            val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                packageInfo.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.signatures
+            }
+            
+            if (signatures != null && signatures.isNotEmpty()) {
+                val cert = signatures[0].toByteArray()
+                val md = java.security.MessageDigest.getInstance("SHA-1")
+                val publicKey = md.digest(cert)
+                val hexString = StringBuilder()
+                for (aPublicKey in publicKey) {
+                    val appendString = Integer.toHexString(0xFF and aPublicKey.toInt()).uppercase()
+                    if (appendString.length == 1) hexString.append("0")
+                    hexString.append(appendString).append(":")
+                }
+                if (hexString.isNotEmpty()) {
+                    hexString.setLength(hexString.length - 1)
+                }
+                sha1 = hexString.toString()
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to get SHA-1 fingerprint", e)
+        }
+        return Pair(sha1, packageName)
     }
 
     /**

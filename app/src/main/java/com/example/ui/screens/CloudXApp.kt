@@ -35,6 +35,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.UploadItem
@@ -87,9 +90,15 @@ fun CloudXApp(viewModel: CloudXViewModel, modifier: Modifier = Modifier) {
             val account = task.getResult(ApiException::class.java)
             if (account != null) {
                 viewModel.handleSignInSuccess(account)
+            } else {
+                viewModel.setAuthError("Google Sign-In dibatalkan atau data akun kosong.")
             }
         } catch (e: Exception) {
             Log.e("CloudXApp", "Google Sign-In failed", e)
+            val apiException = e as? ApiException
+            val errorCode = apiException?.statusCode ?: -1
+            val errorMsg = getCommonStatusMessage(errorCode)
+            viewModel.setAuthError("Masuk Google gagal (Kode: $errorCode). $errorMsg: ${e.localizedMessage ?: "Unknown error"}")
         }
     }
 
@@ -169,7 +178,10 @@ fun CloudXApp(viewModel: CloudXViewModel, modifier: Modifier = Modifier) {
         ) {
             when (val currentAuth = authState) {
                 is AuthState.LoggedOut -> {
+                    val (sha1, pkg) = remember { viewModel.getAppSha1AndPackageName() }
                     LoginScreen(
+                        packageName = pkg,
+                        sha1 = sha1,
                         onLoginClick = {
                             googleSignInLauncher.launch(viewModel.signInClient.signInIntent)
                         }
@@ -180,9 +192,60 @@ fun CloudXApp(viewModel: CloudXViewModel, modifier: Modifier = Modifier) {
                         CircularProgressIndicator()
                     }
                 }
+                is AuthState.ResolvingAuth -> {
+                    val recoveryLauncher = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.StartActivityForResult()
+                    ) { result ->
+                        val lastAccount = GoogleSignIn.getLastSignedInAccount(context)
+                        if (lastAccount != null) {
+                            viewModel.handleSignInSuccess(lastAccount)
+                        } else {
+                            viewModel.logout()
+                        }
+                    }
+
+                    LaunchedEffect(currentAuth.intent) {
+                        try {
+                            recoveryLauncher.launch(currentAuth.intent)
+                        } catch (e: Exception) {
+                            Log.e("CloudXApp", "Failed to launch resolution intent", e)
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Menyelesaikan otentikasi Google...",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Harap selesaikan verifikasi akun jika ada dialog pop-up.",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
                 is AuthState.Error -> {
+                    val (sha1, pkg) = remember { viewModel.getAppSha1AndPackageName() }
                     LoginScreen(
                         errorMessage = currentAuth.message,
+                        packageName = pkg,
+                        sha1 = sha1,
                         onLoginClick = {
                             googleSignInLauncher.launch(viewModel.signInClient.signInIntent)
                         }
@@ -241,11 +304,15 @@ fun CloudXApp(viewModel: CloudXViewModel, modifier: Modifier = Modifier) {
 @Composable
 fun LoginScreen(
     errorMessage: String? = null,
+    packageName: String = "",
+    sha1: String = "",
     onLoginClick: () -> Unit
 ) {
+    val scrollState = rememberScrollState()
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(scrollState)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -295,13 +362,107 @@ fun LoginScreen(
         }
 
         if (errorMessage != null) {
-            Text(
-                text = errorMessage,
-                color = MaterialTheme.colorScheme.error,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Error",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Gagal Masuk Google",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 16.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                    
+                    if (errorMessage.contains("10") || errorMessage.contains("12500") || errorMessage.contains("DEVELOPER_ERROR") || errorMessage.contains("SIGN_IN_FAILED")) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        // Compile-safe horizontal divider line
+                        Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.2f))
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "💡 Petunjuk Solusi:",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Sertifikat SHA-1 aplikasi Anda belum terdaftar di kredensial Google Cloud Console. Silakan buka dashboard Google Cloud Anda dan daftarkan Kredensial Android baru dengan info berikut:",
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        SelectionContainer {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        MaterialTheme.colorScheme.onError.copy(alpha = 0.3f),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = "Nama Paket (Package Name):",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                    text = packageName,
+                                    fontSize = 12.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Sidik Jari SHA-1 (SHA-1 Fingerprint):",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                    text = sha1,
+                                    fontSize = 12.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -797,5 +958,23 @@ fun formatDriveDate(dateStr: String): String {
         formatter.format(date)
     } catch (e: Exception) {
         dateStr
+    }
+}
+
+// Helper to translate common Google Sign-In ApiExceptions to friendly explanation
+fun getCommonStatusMessage(statusCode: Int): String {
+    return when (statusCode) {
+        0 -> "SUCCESS"
+        7 -> "NETWORK_ERROR (Koneksi bermasalah atau internet mati)"
+        8 -> "INTERNAL_ERROR (Kesalahan internal Google Play Services)"
+        10 -> "DEVELOPER_ERROR (Sertifikat SHA-1 atau nama paket tidak cocok di Google Cloud Console)"
+        13 -> "ERROR (Kesalahan umum Google)"
+        15 -> "TIMEOUT"
+        16 -> "CANCELED (Dibatalkan oleh pengguna)"
+        17 -> "API_NOT_CONNECTED"
+        12500 -> "SIGN_IN_FAILED (Sertifikat SHA-1 belum terdaftar di Konsol Google Cloud)"
+        12501 -> "SIGN_IN_CANCELLED (Masuk dibatalkan oleh pengguna)"
+        12502 -> "SIGN_IN_CURRENTLY_IN_PROGRESS"
+        else -> "Error tidak dikenal"
     }
 }
