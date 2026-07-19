@@ -1,0 +1,6 @@
+{
+  "name": "CloudX",
+  "description": "Native file manager based on Google Drive with upload progress and file selection",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
