@@ -70,6 +70,10 @@ class CloudXViewModel(application: Application) : AndroidViewModel(application) 
     private val _driveFiles = MutableStateFlow<List<DriveService.DriveFile>>(emptyList())
     val driveFiles: StateFlow<List<DriveService.DriveFile>> = _driveFiles.asStateFlow()
 
+    // Remote Google Drive storage quota
+    private val _driveQuota = MutableStateFlow<DriveService.DriveQuota?>(null)
+    val driveQuota: StateFlow<DriveService.DriveQuota?> = _driveQuota.asStateFlow()
+
     // State for loading/error in remote files listing
     private val _filesLoading = MutableStateFlow(false)
     val filesLoading: StateFlow<Boolean> = _filesLoading.asStateFlow()
@@ -233,10 +237,37 @@ class CloudXViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val files = driveService.listFiles(currentAuth.accessToken)
                 _driveFiles.value = files
+                
+                try {
+                    val quota = driveService.getQuota(currentAuth.accessToken)
+                    _driveQuota.value = quota
+                } catch (eq: Exception) {
+                    Log.e(tag, "Failed to fetch drive storage quota", eq)
+                }
             } catch (e: Exception) {
                 Log.e(tag, "Failed to fetch drive files", e)
                 _filesError.value = e.localizedMessage ?: "Failed to load Google Drive files"
             } finally {
+                _filesLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Deletes a file from Google Drive and refreshes the remote file list and quota.
+     */
+    fun deleteRemoteFile(fileId: String) {
+        val currentAuth = _authState.value
+        if (currentAuth !is AuthState.LoggedIn) return
+
+        viewModelScope.launch {
+            _filesLoading.value = true
+            try {
+                driveService.deleteFile(fileId, currentAuth.accessToken)
+                fetchDriveFiles()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to delete remote file: $fileId", e)
+                _filesError.value = e.localizedMessage ?: "Gagal menghapus file dari Google Drive"
                 _filesLoading.value = false
             }
         }

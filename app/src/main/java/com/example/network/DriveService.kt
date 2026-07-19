@@ -25,6 +25,11 @@ class DriveService(private val client: OkHttpClient = OkHttpClient()) {
         val createdTime: String?
     )
 
+    data class DriveQuota(
+        val limit: Long,
+        val usage: Long
+    )
+
     /**
      * Custom RequestBody to stream data from Android Content URI and report progress.
      */
@@ -156,6 +161,49 @@ class DriveService(private val client: OkHttpClient = OkHttpClient()) {
             val bodyString = response.body?.string() ?: ""
             val responseJson = JSONObject(bodyString)
             responseJson.getString("id")
+        }
+     }
+
+    /**
+     * Gets storage quota details from Google Drive.
+     */
+    suspend fun getQuota(accessToken: String): DriveQuota = withContext(Dispatchers.IO) {
+        val url = "https://www.googleapis.com/drive/v3/about?fields=storageQuota"
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .addHeader("Authorization", "Bearer $accessToken")
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("Failed to get quota: Code ${response.code} ${response.message}")
+            }
+            val bodyString = response.body?.string() ?: ""
+            val json = JSONObject(bodyString)
+            val quotaObj = json.optJSONObject("storageQuota")
+            val limit = quotaObj?.optString("limit", "0")?.toLongOrNull() ?: 0L
+            val usage = quotaObj?.optString("usage", "0")?.toLongOrNull() ?: 0L
+            DriveQuota(limit = limit, usage = usage)
+        }
+    }
+
+    /**
+     * Deletes a file from Google Drive.
+     */
+    suspend fun deleteFile(fileId: String, accessToken: String): Boolean = withContext(Dispatchers.IO) {
+        val url = "https://www.googleapis.com/drive/v3/files/$fileId"
+        val request = Request.Builder()
+            .url(url)
+            .delete()
+            .addHeader("Authorization", "Bearer $accessToken")
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("Failed to delete file: Code ${response.code} ${response.message}")
+            }
+            true
         }
     }
 }
